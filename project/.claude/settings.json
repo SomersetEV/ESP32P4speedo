@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --version)",
+      "Bash(npx lv_font_conv --version)",
+      "Bash(python3 -c \":*)"
+    ]
+  }
+}
