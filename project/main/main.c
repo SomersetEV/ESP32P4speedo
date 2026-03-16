@@ -81,6 +81,13 @@ static volatile int      g_can_gear_idx = 1;
 // RPM from CAN ID 0x1DA bytes 4-5 (Leaf inverter: big-endian int16, raw / 2 = RPM)
 static volatile uint32_t g_can_rpm      = 0;
 
+// Backlight levels
+#define BL_NORMAL  100
+#define BL_DIM      50
+
+// Sidelights (from CAN 0x801)
+static volatile bool g_sidelights_on = false;
+
 //--------UPDATE/REFRESH_DELAYS------//
 #define FUEL_UPDATE_PERIOD 1000 // 1 updates a second
 #define TEMP_UPDATE_DELAY 250 // 4 updates a second
@@ -491,6 +498,14 @@ void vss_task(void *arg) {
 // Gear: ID 0x312, byte 2 — 0x8F=P  0x8E=R  0x8D=N  0x8C=D  0x88=S
 //       Pill index: 0=P 1=N 2=R 3=D 4=S
 
+static void process_sidelights(uint8_t *data) {
+    g_sidelights_on = (data[0] & 0x02) != 0;  // byte 0, bit 1
+}
+
+static void update_backlight(void) {
+    bsp_display_brightness_set(g_sidelights_on ? BL_DIM : BL_NORMAL);
+}
+
 static void can_init(void) {
     twai_general_config_t g_cfg = TWAI_GENERAL_CONFIG_DEFAULT(
         CAN_TX_GPIO, CAN_RX_GPIO, TWAI_MODE_LISTEN_ONLY);
@@ -526,6 +541,12 @@ void can_task(void *arg) {
                 case 0x88: g_can_gear_idx = 4; break;  // S
                 default: break;                         // unknown — keep last
             }
+        }
+
+        // ── Sidelights (ID 0x801, byte 0 bit 1) ──────────────────────────
+        if (msg.identifier == 0x801 && msg.data_length_code >= 1) {
+            process_sidelights(msg.data);
+            update_backlight();
         }
     }
 }
@@ -1038,7 +1059,7 @@ void app_main(void) {
     xTaskCreatePinnedToCore(save_miles_task, "save_miles_task", 4096, NULL, 4, NULL, 0);
 
     bsp_display_backlight_off();
-    vTaskDelay(pdMS_TO_TICKS(100)); 
-    bsp_display_brightness_set(50); 
+    vTaskDelay(pdMS_TO_TICKS(100));
+    bsp_display_brightness_set(BL_NORMAL);
 
 }
