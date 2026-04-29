@@ -2,7 +2,7 @@
     "idf.flashType": "UART",
     "idf.port": "/dev/tty.usbmodem21101",
     "idf.currentSetup": "C:\\Users\\benay\\esp\\v5.4.2\\esp-idf",
-    "idf.portWin": "COM6",
+    "idf.portWin": "COM7",
     "idf.openOcdConfigs": [
         "board/esp32p4-builtin.cfg"
     ],
