@@ -28,6 +28,7 @@ extern lv_obj_t *ui_label_odometer_value;  // odometer miles (Doto_48)
 // Index:  0=R  1=N  2=D   (direction from ZombieVerter over CAN)
 // Colour the active entry from gauge_timer after each gear-detection update.
 #define UI_GEAR_COUNT 3
+#define ARC_SWEEP_DEG 260   // RPM arc range, one unit per degree of sweep
 extern lv_obj_t *ui_gear_labels[UI_GEAR_COUNT];
 
 // ── Screen lifecycle ─────────────────────────────────────────────────────

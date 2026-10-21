@@ -12,11 +12,9 @@ idf_component_register(
         "tach_ui/images/ui_img_sti_logo_png.c"
         "tach_ui/boot/boot_screen.c"
         "odometer/odometer.c"
-        "lap_timer/lap_timer.c"
 
     INCLUDE_DIRS
         "./tach_ui"
-        "./lap_timer"
         "./odometer"
         "."
     

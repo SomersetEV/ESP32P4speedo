@@ -124,14 +124,23 @@ static void save_record(void)
     odo_record_t rec;
 
     rec.meters = total_meters;
-    rec.version = ++current_version;
+    rec.version = current_version + 1;
     rec.crc = calculate_crc(&rec);
 
     const char *key = use_slot_a ? ODO_KEY_A : ODO_KEY_B;
 
-    ESP_ERROR_CHECK(nvs_set_blob(odo_handle, key, &rec, sizeof(rec)));
-    ESP_ERROR_CHECK(nvs_commit(odo_handle));
+    // Don't abort on a flash error while driving; keep the state and retry on
+    // the next periodic save instead.
+    esp_err_t err = nvs_set_blob(odo_handle, key, &rec, sizeof(rec));
+    if (err == ESP_OK) {
+        err = nvs_commit(odo_handle);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Save to %s failed: %s", key, esp_err_to_name(err));
+        return;
+    }
 
+    current_version = rec.version;
     use_slot_a = !use_slot_a;
     last_saved_meters = total_meters;
 

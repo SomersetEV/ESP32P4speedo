@@ -22,7 +22,9 @@ void boot_screen_create(void)
 
     boot_logo = lv_img_create(boot_screen);
     lv_img_set_src(boot_logo, &logotransparent);
-    lv_obj_center(boot_logo);
+    // Image is cropped to its non-black content; this offset keeps it on the
+    // same pixels as the original 1080x763 image did when centred.
+    lv_obj_align(boot_logo, LV_ALIGN_CENTER, -14, -52);
     lv_obj_set_style_opa(boot_logo, LV_OPA_0, 0);
 }
 
@@ -47,6 +49,6 @@ void boot_start(void)
 // auto_del=true — LVGL deletes boot_screen once the transition is complete.
 void boot_finish(lv_obj_t *next_screen)
 {
-    lv_scr_load_anim(next_screen, LV_SCR_LOAD_ANIM_FADE_ON, 800, 0, true);
+    lv_scr_load_anim(next_screen, LV_SCR_LOAD_ANIM_FADE_ON, BOOT_FADE_MS, 0, true);
     boot_screen = NULL;   // pointer cleared; object freed by LVGL auto_del
 }

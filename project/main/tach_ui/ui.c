@@ -25,17 +25,20 @@ lv_obj_t *ui____initial_actions0;
 // Timeline (ms from boot_start):
 //   t=  400  logo starts fading in  (800 ms fade)
 //   t= 1200  logo fully visible
-//   t= 3700  boot_finish_timer_cb fires → 800 ms fade to main screen
-//   t= 4500  main screen fully visible
+//   t= 2900  boot_fade_timer_cb fires → 800 ms fade to main screen
+//   t= 3700  main screen fully visible, logo gone → needle sweep starts
 //
-// Total splash time visible: ~2.5 s.  Adjust BOOT_HOLD_MS to taste.
+// Total splash time visible: ~1.7 s.  Adjust BOOT_HOLD_MS to taste.
 
-#define BOOT_HOLD_MS 3700
+#define BOOT_HOLD_MS 3700   // sweep start; the fade is timed to finish here
 
-static void boot_finish_timer_cb(lv_timer_t *t)
+static void boot_fade_timer_cb(lv_timer_t *t)
 {
-    lv_timer_del(t);
     boot_finish(ui_Screen1);
+}
+
+static void sweep_start_timer_cb(lv_timer_t *t)
+{
     startup_sweep_begin();   // kick off the gauge sweep on the main screen
 }
 
@@ -58,8 +61,11 @@ void ui_init( void )
     boot_screen_create();
     boot_start();
 
-    lv_timer_t *boot_timer = lv_timer_create(boot_finish_timer_cb, BOOT_HOLD_MS, NULL);
-    lv_timer_set_repeat_count(boot_timer, 1);
+    // One-shot timers (repeat count 1 → LVGL deletes them after they fire)
+    lv_timer_t *fade_timer = lv_timer_create(boot_fade_timer_cb, BOOT_HOLD_MS - BOOT_FADE_MS, NULL);
+    lv_timer_set_repeat_count(fade_timer, 1);
+    lv_timer_t *sweep_timer = lv_timer_create(sweep_start_timer_cb, BOOT_HOLD_MS, NULL);
+    lv_timer_set_repeat_count(sweep_timer, 1);
 }
 
 void ui_destroy( void )

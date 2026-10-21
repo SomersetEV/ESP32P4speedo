@@ -45,13 +45,15 @@ void ui_Screen1_screen_init(void)
     // RPM ARC  (outer ring)
     //   Widget  760 x 760  →  outer radius ≈ 380 px, inner ≈ 358 px
     //   bg_angles(140, 40) = 260° sweep, gap at the bottom of the circle.
-    //   Range 0-12000 RPM.  green → amber at 6000 → red at 9000 (set in fw).
+    //   0-12000 RPM mapped onto 0-260°.  green → amber at 6000 → red at 9000 (set in fw).
     // ────────────────────────────────────────────────────────────────────────
     ui_speed_arc = lv_arc_create(ui_Screen1);
     lv_obj_set_size(ui_speed_arc, 760, 760);
     lv_obj_align(ui_speed_arc, LV_ALIGN_CENTER, 0, 0);
     lv_arc_set_bg_angles(ui_speed_arc, 140, 40);   // 260° sweep, CW from east
-    lv_arc_set_range(ui_speed_arc, 0, 12000);
+    // Range is in degrees (0-260), not RPM: the arc can only draw whole degrees,
+    // so this stops sub-degree RPM changes from invalidating the arc.
+    lv_arc_set_range(ui_speed_arc, 0, ARC_SWEEP_DEG);
     lv_arc_set_value(ui_speed_arc, 0);
     lv_obj_clear_flag(ui_speed_arc, LV_OBJ_FLAG_CLICKABLE);
 
