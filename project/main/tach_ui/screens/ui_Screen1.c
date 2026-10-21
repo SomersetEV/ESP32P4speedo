@@ -9,7 +9,7 @@
 //   • "RPM x 1000" descriptor label     dy = -260
 //   • Speed number (Montserrat 120 pt)  dy =  -75
 //   • "M P H" unit label                dy =  +30
-//   • Gear pill row  P N R D S          dy = +130
+//   • Gear pill row  R N D              dy = +130
 //   • Odometer "ODO  000000.0  mi"      dy = +235
 
 #include "../ui.h"
@@ -20,7 +20,7 @@ lv_obj_t *ui_speed_arc        = NULL;
 lv_obj_t *ui_label_mph_value  = NULL;
 lv_obj_t *ui_label_gear_value = NULL;
 lv_obj_t *ui_label_odometer_value = NULL;
-lv_obj_t *ui_gear_labels[5]   = {NULL};
+lv_obj_t *ui_gear_labels[UI_GEAR_COUNT] = {NULL};
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -140,13 +140,13 @@ void ui_Screen1_screen_init(void)
     lv_obj_align(mph_unit, LV_ALIGN_CENTER, 0, +30);
 
     // ────────────────────────────────────────────────────────────────────────
-    // GEAR PILL ROW   P  N  R  D  S
-    //   360 x 70  pill container, flex row, evenly spaced.
-    //   Active gear: N=amber #ffaa00,  D/S=green #00cc44,  P/R=amber.
+    // GEAR PILL ROW   R  N  D
+    //   240 x 70  pill container, flex row, evenly spaced.
+    //   Active gear: N=amber,  R/D=green.
     //   Inactive: very dark #1e2e1e.
     // ────────────────────────────────────────────────────────────────────────
     lv_obj_t *gear_cont = lv_obj_create(ui_Screen1);
-    lv_obj_set_size(gear_cont, 360, 70);
+    lv_obj_set_size(gear_cont, 240, 70);
     lv_obj_align(gear_cont, LV_ALIGN_CENTER, 0, +130);
     lv_obj_set_style_bg_color(gear_cont, lv_color_hex(0x0d140d),
                               LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -167,8 +167,8 @@ void ui_Screen1_screen_init(void)
                           LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 
-    static const char *gear_str[] = {"P","N","R","D","S"};
-    for (int i = 0; i < 5; i++) {
+    static const char *gear_str[UI_GEAR_COUNT] = {"R","N","D"};
+    for (int i = 0; i < UI_GEAR_COUNT; i++) {
         ui_gear_labels[i] = lv_label_create(gear_cont);
         lv_label_set_text(ui_gear_labels[i], gear_str[i]);
         lv_obj_set_style_text_font(ui_gear_labels[i], &ui_font_Montserrat_48,
@@ -234,5 +234,5 @@ void ui_Screen1_screen_destroy(void)
     ui_label_mph_value      = NULL;
     ui_label_gear_value     = NULL;
     ui_label_odometer_value = NULL;
-    for (int i = 0; i < 5; i++) ui_gear_labels[i] = NULL;
+    for (int i = 0; i < UI_GEAR_COUNT; i++) ui_gear_labels[i] = NULL;
 }

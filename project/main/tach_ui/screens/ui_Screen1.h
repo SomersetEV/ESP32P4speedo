@@ -25,9 +25,10 @@ extern lv_obj_t *ui_label_gear_value;      // hidden compat label
 extern lv_obj_t *ui_label_odometer_value;  // odometer miles (Doto_48)
 
 // ── Gear pill row ─────────────────────────────────────────────────────────
-// Index:  0=P  1=N  2=R  3=D  4=S
+// Index:  0=R  1=N  2=D   (direction from ZombieVerter over CAN)
 // Colour the active entry from gauge_timer after each gear-detection update.
-extern lv_obj_t *ui_gear_labels[5];
+#define UI_GEAR_COUNT 3
+extern lv_obj_t *ui_gear_labels[UI_GEAR_COUNT];
 
 // ── Screen lifecycle ─────────────────────────────────────────────────────
 void ui_Screen1_screen_init(void);

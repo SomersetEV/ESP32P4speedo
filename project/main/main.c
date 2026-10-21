@@ -62,6 +62,17 @@
 #define CAN_TX_GPIO  GPIO_NUM_0  // <-- ESP32 TX → MCP2551 TXD  (assign real pin before enabling CAN)
 #define CAN_RX_GPIO  GPIO_NUM_0  // <-- MCP2551 RXD → (voltage divider) → ESP32 RX
 
+// ZombieVerter mapped CAN messages
+// Direction: Zombie "dir" spot value, TX map: pos 0, 8 bits, gain 1
+//            -1=R  0=N  1=D  (2=Park shown as N)
+#define ZOMBIE_DIR_CAN_ID    0x7F0
+#define ZOMBIE_DIR_BYTE      0
+// Road speed: Zombie "Veh_Speed" (kph), TX map: pos 0, 16 bits, gain 1
+#define ZOMBIE_SPEED_CAN_ID  0x7F1
+#define ZOMBIE_SPEED_BYTE    0
+#define ZOMBIE_SPEED_GAIN    1.0f   // raw * gain = speed in km/h (or mph, see below)
+#define ZOMBIE_SPEED_IN_KMH  1      // 1 = value is km/h, 0 = value is already mph
+
 //--------------------------//
 
 
@@ -76,7 +87,7 @@
 #define ADC_UPDATE_PERIOD_MS 10
 #define FILTER_SAMPLES_DEFAULT 8
 
-// Gear pill index from CAN: 0=P 1=N 2=R 3=D 4=S  (default N until first CAN frame)
+// Gear pill index from Zombie dir: 0=R 1=N 2=D  (default N until first CAN frame)
 static volatile int      g_can_gear_idx = 1;
 // RPM from CAN ID 0x1DA bytes 4-5 (Leaf inverter: big-endian int16, raw / 2 = RPM)
 static volatile uint32_t g_can_rpm      = 0;
@@ -169,24 +180,16 @@ int periodIndex = 0;
 
 //------------------------------//
 
-//-------------VSS (YBE100530 Hall effect, LT230 transfer box)-------------//
-// Signal via optocoupler — output is open-collector 3.3V, internal pull-up used.
-// Calibration: 8,000 pulses per mile.
-// mph = 450,000.0f / period_us  (derived: 3,600,000,000 / (8000 * period_us))
+//-------------ROAD SPEED (ZombieVerter road speed over CAN)-------------//
+#define SPEED_MAX_MPH        150.0f   // display clamp; above this is not road speed
+#define SPEED_TIMEOUT_MS     1000     // no speed frame for 1 s → 0 mph
+#define SPEED_FILTER_ALPHA   0.20f    // EMA, ~250 ms settle at the 20 Hz task rate
+#define METRES_PER_MILE      1609.344f
 
-#define VSS_GPIO            GPIO_NUM_35  // <-- set to your wired GPIO pin
-#define VSS_MIN_PERIOD_US   1000         // ~3600 mph floor, kills glitches
-#define VSS_TIMEOUT_MS      1000         // no pulse for 1 s → 0 mph
-#define VSS_AVG_SAMPLES     4
+static volatile float    g_can_speed_mph = 0.0f;  // latest value from CAN
+static volatile uint32_t g_can_speed_ms  = 0;     // time of last speed frame
 
-static portMUX_TYPE vssMux = portMUX_INITIALIZER_UNLOCKED;
-static volatile uint64_t lastVssUs    = 0;
-static volatile uint64_t lastVssMs    = 0;
-static volatile uint32_t vssPulseCount = 0;   // raw pulse count for odometer
-static uint64_t vssPeriodBuf[VSS_AVG_SAMPLES] = {0};
-static int      vssPeriodIdx = 0;
-
-volatile float g_vss_mph = 0.0f;
+volatile float g_speed_mph = 0.0f;                // filtered, for display
 
 //------------------------------//
 
@@ -205,6 +208,9 @@ static int64_t boot_time_ms = 0;
 
 //-------------LOGGING------------//
 static const char *TAG_FUEL = "FUEL_SENSOR";
+#if ENABLE_LOGS
+static const char *TAG_TACH = "TACH";
+#endif
 //--------------------------------//
 
 //------------DATA_SENT_OUT---------//
@@ -418,72 +424,38 @@ void tach_task(void *arg) {
     }
 }
 
-//-----------VSS ISR / init / task------------------------------------------//
+//-----------Road speed / odometer task-------------------------------------//
+// Speed comes from ZombieVerter over CAN (see can_task). This task applies the
+// timeout, filters the value for display and integrates it for the odometer.
 
-void IRAM_ATTR vssISR(void *arg) {
-    uint64_t now = esp_timer_get_time();
-    uint64_t dt  = now - lastVssUs;
-    if (dt < VSS_MIN_PERIOD_US) return;
-    portENTER_CRITICAL_ISR(&vssMux);
-    vssPeriodBuf[vssPeriodIdx] = dt;
-    vssPeriodIdx = (vssPeriodIdx + 1) % VSS_AVG_SAMPLES;
-    lastVssUs = now;
-    lastVssMs = now / 1000;
-    vssPulseCount++;
-    portEXIT_CRITICAL_ISR(&vssMux);
-}
-
-static void vss_init(void) {
-    gpio_config_t io_conf = {
-        .intr_type    = GPIO_INTR_NEGEDGE, // optocoupler pulls low on pulse
-        .mode         = GPIO_MODE_INPUT,
-        .pin_bit_mask = (1ULL << VSS_GPIO),
-        .pull_up_en   = 1,   // internal pull-up; optocoupler is open-collector
-        .pull_down_en = 0,
-    };
-    gpio_config(&io_conf);
-    // ISR service already installed by tach_init(); just add handler.
-    gpio_isr_handler_add(VSS_GPIO, vssISR, NULL);
-}
-
-void vss_task(void *arg) {
+void speed_task(void *arg) {
     static float meter_frac = 0.0f;   // sub-metre accumulator
+    uint64_t lastUs = esp_timer_get_time();
 
     while (true) {
-        uint64_t periods[VSS_AVG_SAMPLES];
-        uint32_t pulses;
-        portENTER_CRITICAL(&vssMux);
-        memcpy(periods, vssPeriodBuf, sizeof(periods));
-        pulses = vssPulseCount;
-        vssPulseCount = 0;
-        portEXIT_CRITICAL(&vssMux);
+        uint64_t nowUs = esp_timer_get_time();
+        float dt_s = (float)(nowUs - lastUs) / 1000000.0f;
+        lastUs = nowUs;
 
-        // ── Speed (period average) ─────────────────────────────────────────
-        float sum = 0.0f;
-        int   count = 0;
-        for (int i = 0; i < VSS_AVG_SAMPLES; i++) {
-            if (periods[i] > 0) {
-                sum += 450000.0f / (float)periods[i];
-                count++;
-            }
+        float mph_raw = g_can_speed_mph;
+        uint32_t now_ms = (uint32_t)(nowUs / 1000);
+        if (now_ms - g_can_speed_ms > SPEED_TIMEOUT_MS) {
+            mph_raw = 0.0f;
         }
 
-        uint64_t nowMs = esp_timer_get_time() / 1000;
-        if (nowMs - lastVssMs > VSS_TIMEOUT_MS) {
-            g_vss_mph = 0.0f;
-        } else if (count > 0) {
-            g_vss_mph = sum / count;
+        // ── Speed (display) ───────────────────────────────────────────────
+        if (mph_raw == 0.0f) {
+            g_speed_mph = 0.0f;
+        } else {
+            g_speed_mph += SPEED_FILTER_ALPHA * (mph_raw - g_speed_mph);
         }
 
-        // ── Odometer (pulse count → metres) ───────────────────────────────
-        // 8000 pulses/mile, 1 pulse = 1609.344 / 8000 = 0.201168 m
-        if (pulses > 0) {
-            meter_frac += pulses * 0.201168f;
-            uint32_t whole = (uint32_t)meter_frac;
-            if (whole > 0) {
-                odometer_add_meters(whole);
-                meter_frac -= whole;
-            }
+        // ── Odometer (integrate unfiltered speed → metres) ────────────────
+        meter_frac += mph_raw * (METRES_PER_MILE / 3600.0f) * dt_s;
+        uint32_t whole = (uint32_t)meter_frac;
+        if (whole > 0) {
+            odometer_add_meters(whole);
+            meter_frac -= whole;
         }
 
         vTaskDelay(pdMS_TO_TICKS(50));
@@ -492,11 +464,12 @@ void vss_task(void *arg) {
 
 //--------------------------------------------------------------------------//
 
-//-----------CAN bus (RPM: ID 0x1DA bytes 4-5 | gear: ID 0x312 byte 2)----//
-// RPM:  ID 0x1DA (Nissan Leaf inverter), bytes [4..5] big-endian int16.
-//       Raw value divided by 2 = RPM.  Negative = reverse rotation (clamped to 0).
-// Gear: ID 0x312, byte 2 — 0x8F=P  0x8E=R  0x8D=N  0x8C=D  0x88=S
-//       Pill index: 0=P 1=N 2=R 3=D 4=S
+//-----------CAN bus (RPM: ID 0x1DA | gear + speed: ZombieVerter)---------//
+// RPM:   ID 0x1DA (Nissan Leaf inverter), bytes [4..5] big-endian int16.
+//        Raw value divided by 2 = RPM.  Negative = reverse rotation (clamped to 0).
+// Gear:  ZOMBIE_DIR_CAN_ID, signed byte — -1=R  0=N  1=D
+//        Pill index: 0=R 1=N 2=D
+// Speed: ZOMBIE_SPEED_CAN_ID, uint16 little-endian × ZOMBIE_SPEED_GAIN
 
 static void process_sidelights(uint8_t *data) {
     g_sidelights_on = (data[0] & 0x02) != 0;  // byte 0, bit 1
@@ -531,16 +504,26 @@ void can_task(void *arg) {
             g_can_rpm = (rpm_val > 0) ? (uint32_t)rpm_val : 0;
         }
 
-        // ── Gear position (ID 0x312, byte 2) ─────────────────────────────
-        if (msg.identifier == 0x312 && msg.data_length_code >= 3) {
-            switch (msg.data[2]) {
-                case 0x8F: g_can_gear_idx = 0; break;  // P
-                case 0x8D: g_can_gear_idx = 1; break;  // N
-                case 0x8E: g_can_gear_idx = 2; break;  // R
-                case 0x8C: g_can_gear_idx = 3; break;  // D
-                case 0x88: g_can_gear_idx = 4; break;  // S
-                default: break;                         // unknown — keep last
-            }
+        // ── Gear position (Zombie dir: -1=R 0=N 1=D 2=P) ─────────────────
+        // No P on the display, so Park (and anything unexpected) shows N.
+        if (msg.identifier == ZOMBIE_DIR_CAN_ID &&
+            msg.data_length_code > ZOMBIE_DIR_BYTE) {
+            int8_t dir = (int8_t)msg.data[ZOMBIE_DIR_BYTE];
+            g_can_gear_idx = (dir == -1) ? 0 : (dir == 1) ? 2 : 1;
+        }
+
+        // ── Road speed (Zombie, uint16 little-endian) ────────────────────
+        if (msg.identifier == ZOMBIE_SPEED_CAN_ID &&
+            msg.data_length_code >= ZOMBIE_SPEED_BYTE + 2) {
+            uint16_t raw = (uint16_t)(msg.data[ZOMBIE_SPEED_BYTE] |
+                                      (msg.data[ZOMBIE_SPEED_BYTE + 1] << 8));
+            float spd = raw * ZOMBIE_SPEED_GAIN;
+#if ZOMBIE_SPEED_IN_KMH
+            spd *= 0.621371f;
+#endif
+            if (spd > SPEED_MAX_MPH) spd = SPEED_MAX_MPH;
+            g_can_speed_mph = spd;
+            g_can_speed_ms  = (uint32_t)(esp_timer_get_time() / 1000);
         }
 
         // ── Sidelights (ID 0x801, byte 0 bit 1) ──────────────────────────
@@ -589,8 +572,9 @@ void startup_sweep_begin(void)
     g_startup_tick   = 0;
 }
 
-// Gear sequence: P→N→R→D→S→N  (6 stages, one per sixth of sweep time)
-static const int sweep_gear_seq[] = {0, 1, 2, 3, 4, 1};
+// Gear sequence: R→N→D→N  (4 stages, one per quarter of sweep time)
+static const int sweep_gear_seq[] = {0, 1, 2, 1};
+#define SWEEP_GEAR_STAGES (int)(sizeof(sweep_gear_seq) / sizeof(sweep_gear_seq[0]))
 
 void gauge_timer(lv_timer_t * t) {
 
@@ -615,11 +599,11 @@ void gauge_timer(lv_timer_t * t) {
 
         // Gear
         static int last_sweep_gear = -1;
-        int stage = (int)(frac * 6.0f);
-        if (stage > 5) stage = 5;
+        int stage = (int)(frac * SWEEP_GEAR_STAGES);
+        if (stage > SWEEP_GEAR_STAGES - 1) stage = SWEEP_GEAR_STAGES - 1;
         int sweep_gear = sweep_gear_seq[stage];
         if (sweep_gear != last_sweep_gear) {
-            for (int i = 0; i < 5; i++) {
+            for (int i = 0; i < UI_GEAR_COUNT; i++) {
                 lv_color_t gc = (i == sweep_gear)
                     ? ((i == 1) ? orange_color : green_color)
                     : lv_color_hex(0x1e2e1e);
@@ -638,7 +622,7 @@ void gauge_timer(lv_timer_t * t) {
     }
 
     // ── Live data ─────────────────────────────────────────────────────────
-    float effective_mph = g_vss_mph;
+    float effective_mph = g_speed_mph;
     static int live_last_int = -1;
     int live_int = (int)effective_mph;
     if (live_int != live_last_int) {
@@ -661,7 +645,7 @@ void gauge_timer(lv_timer_t * t) {
     int active_idx = g_can_gear_idx;
     static int last_active_idx = -1;
     if (active_idx != last_active_idx) {
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < UI_GEAR_COUNT; i++) {
             lv_color_t gc = (i == active_idx)
                 ? ((i == 1) ? orange_color : green_color)
                 : lv_color_hex(0x1e2e1e);
@@ -1044,7 +1028,6 @@ void app_main(void) {
     adc_global_init();
     init_label_styles();
     tach_init();
-    vss_init();
     can_init();
     odometer_init();
 
@@ -1054,7 +1037,7 @@ void app_main(void) {
     uart_init(UART_PORT, UART_TX_PIN, UART_PIN_NO_CHANGE, UART_TX_BUF_SIZE, UART_BAUD_RATE); 
     uart_init(UART1_PORT, UART1_TX_PIN, UART_PIN_NO_CHANGE, UART_TX_BUF_SIZE, UART_BAUD_RATE); 
     xTaskCreatePinnedToCore(tach_task, "tach_task", 4096, NULL, 10, NULL, 0);
-    xTaskCreatePinnedToCore(vss_task,  "vss_task",  2048, NULL,  9, NULL, 0);
+    xTaskCreatePinnedToCore(speed_task, "speed_task", 4096, NULL, 9, NULL, 0);
     xTaskCreatePinnedToCore(can_task,  "can_task",  3072, NULL,  8, NULL, 0);
     xTaskCreatePinnedToCore(adc_task, "adc_uart_task", 4096, NULL, 5, NULL, 0);
     xTaskCreatePinnedToCore(save_miles_task, "save_miles_task", 4096, NULL, 4, NULL, 0);
